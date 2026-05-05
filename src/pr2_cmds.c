@@ -64,6 +64,7 @@ static intptr_t EXT_SetSendNeeded(intptr_t *args);
 static intptr_t EXT_MapExtFieldPtr(intptr_t *args);
 static intptr_t EXT_SetExtFieldPtr(intptr_t *args);
 static intptr_t EXT_GetExtFieldPtr(intptr_t *args);
+static intptr_t EXT_SetLastRuntime(intptr_t *args);
 struct
 {
 	char *extname;
@@ -76,6 +77,7 @@ struct
 #ifdef FTE_PEXT_CSQC
 	{"setsendneeded",		EXT_SetSendNeeded},
 #endif
+	{"SetLastRuntime",		EXT_SetLastRuntime},
 };
 ext_syscall_t ext_syscall_tbl[256];
 
@@ -2024,6 +2026,14 @@ intptr_t EXT_SetSendNeeded(intptr_t *args)
 }
 #endif
 
+static intptr_t EXT_SetLastRuntime(intptr_t *args)
+{
+	int entnum = args[1];
+	edict_t *ent = EDICT_NUM(entnum);
+	ent->e.lastruntime = sv.time;
+	return 0;
+}
+
 // To prevent mods from hardcoding field offsets which would cause engine incompatibilities.
 static uint32_t GetExtFieldCookie(void)
 {
@@ -2079,7 +2089,6 @@ static intptr_t EXT_GetExtFieldPtr(intptr_t *args)
 		Con_Printf("GetExtFieldPtr: Corrupt field reference!\n");
 		return 0;
 	}
-
 	size = args[4];
 
 	if ((field_ref + size) > sizeof(ext_entvars_t))
