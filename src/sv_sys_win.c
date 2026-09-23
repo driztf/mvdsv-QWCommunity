@@ -785,7 +785,7 @@ int main(int ac, char *av[])
 		// connected client times out, the message would not otherwise
 		// be printed until the next event.
 		if (!sys_simulation.value) {
-			NET_Sleep((int)sys_select_timeout.value / 1000, false);
+			NET_Sleep(SV_SmoothSleepMs((int)sys_select_timeout.value / 1000), false);
 		}
 
 		// find time passed since last cycle
@@ -881,7 +881,7 @@ int APIENTRY WinMain(   HINSTANCE   hInstance,
 		// connected client times out, the message would not otherwise
 		// be printed until the next event.
 		if (!sys_simulation.value) {
-			NET_Sleep((int)sys_select_timeout.value / 1000, false);
+			NET_Sleep(SV_SmoothSleepMs((int)sys_select_timeout.value / 1000), false);
 		}
 
 		// find time passed since last cycle

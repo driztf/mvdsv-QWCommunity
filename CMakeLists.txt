@@ -74,6 +74,7 @@ set(SRC_COMMON
 	"${DIR_SRC}/sv_save.c"
 	"${DIR_SRC}/sv_send.c"
 	"${DIR_SRC}/sv_sprays.c"
+	"${DIR_SRC}/sv_smooth.c"
 	"${DIR_SRC}/sv_user.c"
 	"${DIR_SRC}/vfs_os.c"
 	"${DIR_SRC}/vfs_pak.c"
@@ -204,3 +205,19 @@ endif()
 
 
 ######################################################################################################
+
+
+######################################################################################################
+
+# Unit tests: `ctest --test-dir build`
+option(MVDSV_TESTS "Build the unit tests" ON)
+if(MVDSV_TESTS AND NOT CMAKE_CROSSCOMPILING)
+	enable_testing()
+	add_executable(test_smooth tests/test_smooth.c ${DIR_SRC}/sv_smooth.c)
+	target_include_directories(test_smooth PRIVATE ${DIR_SRC})
+	target_compile_options(test_smooth PRIVATE ${CFLAGS})
+	if(UNIX)
+		target_link_libraries(test_smooth m)
+	endif()
+	add_test(NAME smooth COMMAND test_smooth)
+endif()

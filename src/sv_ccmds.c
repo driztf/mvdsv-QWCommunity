@@ -1174,6 +1174,51 @@ SV_Status_f
 ================
 */
 extern cvar_t sv_use_dns;
+/*
+================
+SV_SmoothStats_f
+
+Per-client timing over the last few seconds: gaps between packets as they
+arrive from the client and as they are processed, time spent in the smoothing
+queue, and drops.
+================
+*/
+static void SV_SmoothStats_f (void)
+{
+	client_t *cl;
+	smooth_summary_t in, out, wait;
+	double now = curtime;
+	int i;
+
+	Con_Printf ("smoothing stats (last %d s, ms)\n", SMOOTH_WINDOW_SECONDS);
+	Con_Printf ("%-16s %-6s %5s %5s %16s  %16s  %11s  %5s %5s\n",
+	            "name", "smooth", "pkts", "dupes", "in avg/sd/max", "out avg/sd/max", "wait avg/max", "queue", "drops");
+	Con_Printf ("--------------------------------------------------------------------------------------------------\n");
+	for (i = 0, cl = svs.clients; i < MAX_CLIENTS; i++, cl++)
+	{
+		packet_t *p;
+		int queued = 0;
+
+		if (cl->state < cs_connected)
+			continue;
+		for (p = cl->packets; p; p = p->next)
+			queued++;
+		Smooth_SeriesSummary (&cl->smooth.arrival_gap, now, &in);
+		Smooth_SeriesSummary (&cl->smooth.send_gap, now, &out);
+		Smooth_SeriesSummary (&cl->smooth.wait, now, &wait);
+		Con_Printf ("%-16s %-6s %5d %5d %5.1f/%4.1f/%5.1f  %5.1f/%4.1f/%5.1f  %5.1f/%5.1f  %5d %5d\n",
+		            cl->name,
+		            SV_ClientSmoothed (cl) ? "on" : "off",
+		            Smooth_SeriesCount (&cl->smooth.arrivals, now),
+		            Smooth_SeriesCount (&cl->smooth.dupes, now),
+		            in.mean, in.stddev, in.max,
+		            out.mean, out.stddev, out.max,
+		            wait.mean, wait.max,
+		            queued,
+		            Smooth_SeriesCount (&cl->smooth.drops, now));
+	}
+}
+
 void SV_Status_f (void)
 {
 	int i;
@@ -1840,6 +1885,7 @@ void SV_InitOperatorCommands (void)
 
 	// Add sv_status as client allows 'status' alias to over-ride (ezQuake #532)
 	Cmd_AddCommand ("status", SV_Status_f);
+	Cmd_AddCommand ("smoothstats", SV_SmoothStats_f);
 	Cmd_AddCommand ("sv_status", SV_Status_f);
 
 	//bliP: init ->

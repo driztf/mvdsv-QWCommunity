@@ -787,7 +787,7 @@ int main (int argc, char *argv[])
 		// connected client times out, the message would not otherwise
 		// be printed until the next event.
 		if (!sys_simulation.value) {
-			stdin_ready = NET_Sleep((int)sys_select_timeout.value / 1000, do_stdin);
+			stdin_ready = NET_Sleep(SV_SmoothSleepMs((int)sys_select_timeout.value / 1000), do_stdin);
 		}
 
 		// find time passed since last cycle

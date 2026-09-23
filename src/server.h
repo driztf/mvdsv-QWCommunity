@@ -21,6 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define __SERVER_H__
 
 #include "progs.h"
+#include "sv_smooth.h"
 #ifdef USE_PR2
 #include "vm.h"
 #include "pr2.h"
@@ -382,6 +383,7 @@ typedef struct client_s
 	double          disable_updates_stop;     // Vladis
 	qbool           maxping_met;              // set if user meets maxping requirements
 	packet_t        *packets, *last_packet;
+	smooth_t        smooth;                   // connection smoothing state, see sv_smooth.h
 
 #ifdef MVD_PEXT1_HIGHLAGTELEPORT
 	// lagged-teleport extension
@@ -1163,5 +1165,9 @@ void SV_SetClientConnectionTime(client_t* client);
 #define SV_CommandLineHeapSizeMemoryKB() (COM_CheckParm(cmdline_param_host_memory_kb))
 #define SV_CommandLineHeapSizeMemoryMB() (COM_CheckParm(cmdline_param_host_memory_mb))
 #endif
+
+// connection smoothing (sv_main.c)
+qbool SV_ClientSmoothed (client_t *cl);
+int SV_SmoothSleepMs (int max_ms);
 
 #endif /* !__SERVER_H__ */
