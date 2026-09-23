@@ -4,14 +4,18 @@ between a client's packets before the server processes them.
 
 QuakeWorld clients send a fixed number of packets per second (77, one every
 13 ms), and links such as cellular uplinks deliver them in clumps. Each packet
-is processed no earlier than `interval` after the previous one, so packets that
-arrive on time pass straight through and only the ones arriving early (right
-behind a late one) wait. The interval is a little shorter than the client's own
-send rate, so every packet released from a backlog trims the backlog by the
-difference and the queue always drains back to empty. Once a backlog grows
-past a threshold the queue drains at double rate to recover from a latency
-burst, and packets that have waited past a hard limit are discarded, oldest
-first, so the client skips ahead rather than falling ever further behind.
+is processed no earlier than one interval after the previous one, so packets
+that arrive on time pass straight through and only the ones arriving early
+(right behind a late one) wait. The interval is the client's own send
+interval, measured from its arrivals over the last few seconds (the configured
+interval serves until enough have been seen), so the releases run at the
+client's rate and the queue holds only what the clumping needs. Whatever slack
+builds up beyond that, because the estimate is a touch long or a stall let the
+queue grow, is found as the smallest wait over the last second and shaved off
+the following slots a little at a time. Once a backlog grows past a threshold
+the queue drains at double rate to recover from a latency burst, and packets
+that have waited past a hard limit are discarded, oldest first, so the client
+skips ahead rather than falling ever further behind.
 
 Clients may send every packet twice for loss protection (cl_c2sdupe). A
 packet that repeats the netchan sequence number of the one before it is such
@@ -29,13 +33,14 @@ means "never".
 #ifndef SV_SMOOTH_H
 #define SV_SMOOTH_H
 
-#define SMOOTH_WINDOW_SECONDS 10
+#define SMOOTH_WINDOW_SECONDS 5
 
 typedef struct
 {
-	double interval;  /* minimum spacing between processed packets, seconds */
+	double interval;  /* spacing between processed packets until the client's rate is measured, seconds */
 	double catchup;   /* backlog age above which the queue drains at double rate */
 	double max_delay; /* packets queued longer than this are dropped */
+	double drain;     /* the most a slot may be shortened to drain slack, as a fraction of the interval */
 } smooth_config_t;
 
 /* Samples from one second. */
@@ -71,10 +76,15 @@ typedef struct
 	unsigned dropped;      /* over the life of the connection */
 	unsigned last_sequence; /* netchan sequence of the last packet, for spotting duplicates; owner maintained */
 	int      have_sequence;
+	double   slack;        /* smallest wait of a release since period_start */
+	int      have_slack;
+	double   period_start;
+	double   drain;        /* slack still to be shaved off coming slots, seconds */
 
 	smooth_series_t arrival_gap; /* ms between packets arriving from the client */
 	smooth_series_t send_gap;    /* ms between packets handed to the server */
 	smooth_series_t wait;        /* ms each packet spent queued */
+	smooth_series_t rate;        /* arrival gaps the rate is measured from; stalls left out */
 	smooth_series_t arrivals;    /* one sample per packet; only the count matters */
 	smooth_series_t dupes;       /* one sample per duplicate; only the count matters */
 	smooth_series_t drops;       /* one sample per drop; only the count matters */
@@ -82,10 +92,14 @@ typedef struct
 
 void Smooth_Init (smooth_t *s);
 /* Builds a config from the console values, clamping nonsense. */
-void Smooth_Config (smooth_config_t *cfg, double interval_ms, double catchup_ms, double max_delay_ms);
+void Smooth_Config (smooth_config_t *cfg, double interval_ms, double catchup_ms, double max_delay_ms, double drain_percent);
 
-/* A packet arrived from the client at `now`. */
-void Smooth_Arrived (smooth_t *s, double now);
+/* A packet arrived from the client at `now`; `cfg` may be NULL when the
+   client is not being smoothed (its rate is then not measured). */
+void Smooth_Arrived (smooth_t *s, double now, const smooth_config_t *cfg);
+/* The spacing between releases: the client's measured send interval once
+   enough arrivals have been seen, the configured one before that. */
+double Smooth_Interval (const smooth_t *s, double now, const smooth_config_t *cfg);
 /* A copy of the previous packet arrived at `now`; statistics only. */
 void Smooth_Duplicate (smooth_t *s, double now);
 /* With the queue empty, whether a packet arriving at `now` may be processed

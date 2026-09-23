@@ -141,12 +141,16 @@ server, which is what qwfwd does.
 
 ### Who is smoothed
 
-`sv_smooth` selects the policy: `0` nobody, `1` (the default) clients that
-opt in with `setinfo smooth 1`, `2` everyone. Opt-in is the default because
-smoothing adds latency (see below) that a player on a good link does not
-need; a server whose whole audience is on poor links can force it. Clients
-can change their setting while connected, and the queue is handed over
-cleanly when they do.
+Smoothing is always available to clients; `sv_smooth` selects how it is
+applied: `0` clients that opt in with `setinfo smooth 1`, `1` (the default)
+everyone, with no way for a client to opt out, `2` everyone except clients
+that opt out with `setinfo smooth 0`. Smoothing everyone is the default
+because on a link that delivers packets on time it costs nothing (see
+below), so most players never notice it, while the ones on poor links get
+it without having to know it exists. A server can restrict it to players
+who ask, or let players who know better switch it off. Clients can change
+their setting while connected, and the queue is handed over cleanly when
+they do.
 
 ### Clocks and wake-ups
 
@@ -169,7 +173,7 @@ Smoothing trades latency for regularity. A smoothed client's commands are
 processed on average about half an uplink slot later than they arrive,
 about 10 ms for a 20 ms slot, and the queue is sized by the clumping, so
 the cost is proportional to how bad the link is and is zero on a link that
-delivers packets on time. A client that does not need it should not opt in.
+delivers packets on time, which is why it can be on for everyone by default.
 
 ## Observability
 
@@ -177,7 +181,7 @@ delivers packets on time. A client that does not need it should not opt in.
 smoothed, packets and duplicates, the average, standard deviation and
 maximum gap between packets as they arrive and as they are processed, the
 average and maximum time packets spent queued, the current queue depth and
-drops. The arrival columns show a client's jitter before they opt in; the
+drops. The arrival columns show a client's jitter as it reaches the server; the
 processing columns show what smoothing made of it. The window is short so
 that the effect of a change, or of a lag event, is visible within seconds.
 
@@ -185,7 +189,7 @@ that the effect of a change, or of a lag event, is visible within seconds.
 
 | Cvar                 | Default   | Meaning |
 |----------------------|-----------|---------|
-| `sv_smooth`          | 1         | 0 off, 1 clients with `setinfo smooth 1`, 2 everyone |
+| `sv_smooth`          | 1         | 0 clients with `setinfo smooth 1`, 1 everyone, 2 everyone except `setinfo smooth 0` |
 | `sv_smooth_interval` | 1000/77   | ms between processed packets until the client's rate is measured |
 | `sv_smooth_drain`    | 10        | most a slot is shortened to drain slack, percent |
 | `sv_smooth_catchup`  | 50        | ms of backlog above which the queue drains at double rate |
@@ -208,6 +212,6 @@ the client. With the rate at 50 (20 ms slots) and the client opted in,
 `smoothstats` showed arrivals with a gap standard deviation of 9.5 ms and
 processing with 1.4 ms under the fixed 12 ms interval, the figure that
 prompted the move to the measured rate (the simulation above predicts about
-0.1 ms for it); with `sv_smooth 0` the processing columns matched the
-arrival columns exactly. The same test exposed the duplicate packet
+0.1 ms for it); with the client not opted in the processing columns
+matched the arrival columns exactly. The same test exposed the duplicate packet
 problem described above.

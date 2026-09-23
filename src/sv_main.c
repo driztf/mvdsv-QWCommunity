@@ -57,10 +57,11 @@ cvar_t	sys_select_timeout = {"sys_select_timeout", "10000", 0, OnChange_sysselec
 
 // connection smoothing: pace a client's packets to a minimum interval before
 // processing them, see sv_smooth.h
-cvar_t	sv_smooth = {"sv_smooth", "1"};              // 0 off, 1 clients with "setinfo smooth 1", 2 everyone except "setinfo smooth 0"
-cvar_t	sv_smooth_interval = {"sv_smooth_interval", "12"};      // ms between processed packets; QW clients send one every 13 ms
+cvar_t	sv_smooth = {"sv_smooth", "1"};              // 0 clients with "setinfo smooth 1", 1 everyone, 2 everyone except "setinfo smooth 0"
+cvar_t	sv_smooth_interval = {"sv_smooth_interval", "12.987012987012987"}; // ms between processed packets until the client's rate is measured; 1000/77
 cvar_t	sv_smooth_catchup = {"sv_smooth_catchup", "50"}; // ms of backlog above which the queue drains at double rate
 cvar_t	sv_smooth_maxdelay = {"sv_smooth_maxdelay", "200"}; // ms after which a queued packet is dropped
+cvar_t	sv_smooth_drain = {"sv_smooth_drain", "10"};        // most a slot is shortened to drain slack, percent
 
 cvar_t	sys_restart_on_error = {"sys_restart_on_error", "0"};
 cvar_t  sv_mod_extensions = { "sv_mod_extensions", "2", CVAR_ROM };
@@ -366,23 +367,24 @@ static qbool SV_QueueDelayedPacket (client_t *cl, double time)
 	return true;
 }
 
-// Whether the client's packets are smoothed: sv_smooth 1 needs "setinfo smooth 1",
-// sv_smooth 2 smooths everyone except "setinfo smooth 0".
+// Whether the client's packets are smoothed. Smoothing is always available:
+// sv_smooth 0 needs "setinfo smooth 1", 1 smooths everyone, 2 smooths everyone
+// except clients with "setinfo smooth 0".
 qbool SV_ClientSmoothed (client_t *cl)
 {
 	const char *key = Info_Get(&cl->_userinfo_ctx_, "smooth");
 
 	switch ((int)sv_smooth.value)
 	{
-		case 0: return false;
-		case 1: return Q_atoi(key) != 0;
+		case 0: return Q_atoi(key) != 0;
+		case 1: return true;
 		default: return !key[0] || Q_atoi(key) != 0;
 	}
 }
 
 static void SV_SmoothConfig (smooth_config_t *cfg)
 {
-	Smooth_Config(cfg, sv_smooth_interval.value, sv_smooth_catchup.value, sv_smooth_maxdelay.value);
+	Smooth_Config(cfg, sv_smooth_interval.value, sv_smooth_catchup.value, sv_smooth_maxdelay.value, sv_smooth_drain.value);
 }
 
 static void SV_ExecuteDelayedPacket (client_t *cl)
@@ -3079,6 +3081,7 @@ SV_ReadPackets
 static void SV_ReadPackets (void)
 {
 	client_t *cl;
+	smooth_config_t cfg;
 	unsigned sequence;
 	qbool dupe;
 	int qport;
@@ -3176,12 +3179,10 @@ static void SV_ReadPackets (void)
 		}
 
 		// ok, we know who sent this packet, but do we need to delay executing it?
-		Smooth_Arrived(&cl->smooth, curtime);
+		SV_SmoothConfig(&cfg);
+		Smooth_Arrived(&cl->smooth, curtime, cl->smooth.active ? &cfg : NULL);
 		if (cl->smooth.active)
 		{
-			smooth_config_t cfg;
-
-			SV_SmoothConfig(&cfg);
 			if (!cl->packets && Smooth_PassThrough(&cl->smooth, curtime, &cfg))
 				SV_ExecuteClientMessage (cl);
 			else if (!SV_QueueDelayedPacket(cl, curtime))
@@ -3618,6 +3619,7 @@ void SV_InitLocal (void)
 	Cvar_Register (&sv_smooth_interval);
 	Cvar_Register (&sv_smooth_catchup);
 	Cvar_Register (&sv_smooth_maxdelay);
+	Cvar_Register (&sv_smooth_drain);
 	Cvar_Register (&sv_maxfps);
 	Cvar_Register (&sys_select_timeout);
 	Cvar_Register (&sys_restart_on_error);

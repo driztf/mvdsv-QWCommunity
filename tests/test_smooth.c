@@ -53,7 +53,7 @@ static double queue_pop (queue_t *q)
 /* A packet arrives; returns 1 when it went straight through. */
 static int arrive (smooth_t *s, queue_t *q, double now, const smooth_config_t *cfg)
 {
-	Smooth_Arrived (s, now);
+	Smooth_Arrived (s, now, cfg);
 	if (!q->count && Smooth_PassThrough (s, now, cfg))
 		return 1;
 	queue_push (q, now);
@@ -93,7 +93,7 @@ static void test_packets_on_schedule_pass_straight_through (void)
 	smooth_t s;
 	queue_t q = {{0}, 0};
 
-	Smooth_Config (&cfg, 10, 50, 200);
+	Smooth_Config (&cfg, 10, 50, 200, 10);
 	Smooth_Init (&s);
 	CHECK (arrive (&s, &q, 1.000, &cfg));
 	CHECK (arrive (&s, &q, 1.010, &cfg));
@@ -107,7 +107,7 @@ static void test_early_packet_waits_for_its_slot (void)
 	smooth_t s;
 	queue_t q = {{0}, 0};
 
-	Smooth_Config (&cfg, 10, 50, 200);
+	Smooth_Config (&cfg, 10, 50, 200, 10);
 	Smooth_Init (&s);
 	CHECK (arrive (&s, &q, 1.000, &cfg));
 	/* 4 ms early: held until the slot at 1.010. */
@@ -136,7 +136,7 @@ static void test_burst_is_spread_and_catch_up_doubles_the_rate (void)
 	double t;
 	int i, n = 0;
 
-	Smooth_Config (&cfg, 10, 50, 200);
+	Smooth_Config (&cfg, 10, 50, 200, 10);
 	Smooth_Init (&s);
 	CHECK (arrive (&s, &q, 1.0, &cfg));
 	for (i = 0; i < 12; i++)
@@ -161,7 +161,7 @@ static void test_stale_packets_are_dropped_oldest_first (void)
 	smooth_t s;
 	queue_t q = {{0}, 0};
 
-	Smooth_Config (&cfg, 10, 50, 200);
+	Smooth_Config (&cfg, 10, 50, 200, 10);
 	Smooth_Init (&s);
 	CHECK (arrive (&s, &q, 1.000, &cfg));
 	CHECK (!arrive (&s, &q, 1.000, &cfg));
@@ -176,38 +176,142 @@ static void test_stale_packets_are_dropped_oldest_first (void)
 	CHECK (Smooth_SeriesCount (&s.drops, 1.250) == 3);
 }
 
-static void test_backlog_drains_when_interval_is_shorter_than_client_rate (void)
+/* Runs `seconds` of a 77 packets/s client whose uplink only transmits every
+   `slot` seconds (0: straight away), releasing exactly when due. Fills
+   `sends` with the send times and returns how many there were. */
+static int simulate (smooth_t *s, queue_t *q, const smooth_config_t *cfg, double t0, double seconds, double slot, double *sends, int max_sends)
 {
-	/* Client sends every 13 ms; we release every 12 ms. */
+	double client_interval = 1.0 / 77.0, next_send = t0, end = t0 + seconds;
+	int n = 0;
+
+	for (;;)
+	{
+		double arrival = slot > 0 ? t0 + slot * ceil ((next_send - t0) / slot - 1e-9) : next_send;
+
+		if (q->count && s->next_release <= arrival)
+		{
+			double due = s->next_release;
+			int released = release (s, q, due, cfg, NULL);
+
+			while (released-- > 0 && n < max_sends)
+				sends[n++] = due;
+			continue;
+		}
+		if (arrival >= end)
+			break;
+		if (arrive (s, q, arrival, cfg) && n < max_sends)
+			sends[n++] = arrival;
+		next_send += client_interval;
+	}
+	return n;
+}
+
+static void test_interval_is_the_measured_rate_once_known (void)
+{
+	smooth_config_t cfg;
+	smooth_t s;
+	double t = 1.0;
+	int i;
+
+	Smooth_Config (&cfg, 13, 50, 200, 10);
+	Smooth_Init (&s);
+	for (i = 0; i < 32; i++)
+	{
+		Smooth_Arrived (&s, t, &cfg);
+		t += 0.040;
+	}
+	/* 31 gaps so far: still the configured interval. */
+	CHECK_NEAR (Smooth_Interval (&s, t, &cfg), 0.013);
+	Smooth_Arrived (&s, t, &cfg);
+	CHECK_NEAR (Smooth_Interval (&s, t, &cfg), 0.040 * 1.002);
+	/* A stall is not a rate signal. */
+	t += 0.5;
+	Smooth_Arrived (&s, t, &cfg);
+	CHECK_NEAR (Smooth_Interval (&s, t, &cfg), 0.040 * 1.002);
+	/* Neither is a burst: 32 gaps of nothing leave the configured interval in place. */
+	Smooth_Init (&s);
+	for (i = 0; i <= 32; i++)
+		Smooth_Arrived (&s, 1.0, &cfg);
+	CHECK_NEAR (Smooth_Interval (&s, 1.0, &cfg), 0.013);
+	/* Unsmoothed clients are not measured. */
+	Smooth_Init (&s);
+	for (i = 0; i < 100; i++)
+		Smooth_Arrived (&s, 1.0 + i * 0.013, NULL);
+	CHECK_NEAR (Smooth_Interval (&s, 2.3, &cfg), 0.013);
+}
+
+static void test_clumped_arrivals_leave_at_the_client_rate (void)
+{
+	/* 77 packets/s through an uplink with a 20 ms slot: after the rate is
+	   measured and the schedule has locked on, every packet leaves on a slot,
+	   the clumping is gone and the queue never runs dry. */
+	static double sends[1024];
+	smooth_config_t cfg;
+	smooth_summary_t wait;
+	smooth_t s;
+	queue_t q = {{0}, 0};
+	double t0 = 1.0, sum = 0, sumsq = 0, max = 0, mean, sd;
+	int n, i, count = 0;
+
+	Smooth_Config (&cfg, 13, 50, 200, 10);
+	Smooth_Init (&s);
+	n = simulate (&s, &q, &cfg, t0, 8.0, 0.020, sends, 1024);
+	CHECK (n > 500);
+	for (i = 1; i < n; i++)
+	{
+		double gap = (sends[i] - sends[i - 1]) * 1000.0;
+
+		if (sends[i - 1] < t0 + 3.0)
+			continue;
+		count++;
+		sum += gap;
+		sumsq += gap * gap;
+		if (gap > max)
+			max = gap;
+	}
+	mean = sum / count;
+	sd = sqrt (sumsq / count - mean * mean);
+	CHECK (fabs (mean - 1000.0 / 77.0) < 0.1);
+	CHECK (sd < 0.2);
+	CHECK (max < 13.5);
+	CHECK (s.dropped == 0);
+	if (sd >= 0.2 || max >= 13.5)
+		printf ("  gaps: mean %.3f sd %.3f max %.3f ms\n", mean, sd, max);
+	/* The queue holds about one uplink slot, not more. */
+	Smooth_SeriesSummary (&s.wait, t0 + 8.0, &wait);
+	CHECK (wait.mean < 20.0);
+}
+
+static void test_backlog_drains_at_the_measured_rate (void)
+{
 	smooth_config_t cfg;
 	smooth_t s;
 	queue_t q = {{0}, 0};
-	double t = 1.0, empty_at = 0;
+	double t = 1.0, empty_at = 0, client_interval = 1.0 / 77.0;
 	int i;
 
-	Smooth_Config (&cfg, 12, 500, 1000);
+	Smooth_Config (&cfg, 13, 500, 1000, 10);
 	Smooth_Init (&s);
 
-	/* A stall delivers four packets at once. */
+	/* A stall delivers four packets at once, then the client is steady. */
 	CHECK (arrive (&s, &q, t, &cfg));
 	for (i = 0; i < 3; i++)
 		CHECK (!arrive (&s, &q, t, &cfg));
 	CHECK (q.count == 3);
 
-	/* Steady 13 ms arrivals from then on: each release frees 1 ms of backlog. */
-	for (i = 0; i < 60; i++)
+	for (i = 4; i < 256; i++)
 	{
-		double step;
-
-		for (step = 0.001; step <= 0.013; step += 0.001)
-			release (&s, &q, t + step, &cfg, NULL);
-		t += 0.013;
+		t += client_interval;
+		while (q.count && s.next_release <= t)
+			release (&s, &q, s.next_release, &cfg, NULL);
 		arrive (&s, &q, t, &cfg);
 		if (!q.count && !empty_at)
 			empty_at = t;
 	}
+	/* 39 ms of slack goes at up to 10% of a slot per packet once the first
+	   half-second period is over. */
 	CHECK (empty_at > 0);
-	CHECK (empty_at - 1.0 <= 40 * 0.013);
+	CHECK (empty_at - 1.0 <= 1.5);
 	CHECK (s.dropped == 0);
 }
 
@@ -222,24 +326,24 @@ static void test_series_summary_and_window (void)
 	Smooth_SeriesRecord (&series, 101.0, 14);
 	Smooth_SeriesRecord (&series, 101.5, 16);
 
-	Smooth_SeriesSummary (&series, 105.0, &summary);
+	Smooth_SeriesSummary (&series, 104.0, &summary);
 	CHECK (summary.count == 4);
 	CHECK_NEAR (summary.mean, 13.0);
 	CHECK_NEAR (summary.stddev, sqrt (5.0));
 	CHECK_NEAR (summary.max, 16.0);
 
-	/* The second the samples were taken in falls out of the window after ten seconds. */
-	Smooth_SeriesSummary (&series, 109.9, &summary);
+	/* The second the samples were taken in falls out of the window after five seconds. */
+	Smooth_SeriesSummary (&series, 104.9, &summary);
 	CHECK (summary.count == 4);
-	Smooth_SeriesSummary (&series, 110.0, &summary);
+	Smooth_SeriesSummary (&series, 105.0, &summary);
 	CHECK (summary.count == 2);
-	Smooth_SeriesSummary (&series, 111.0, &summary);
+	Smooth_SeriesSummary (&series, 106.0, &summary);
 	CHECK (summary.count == 0);
-	CHECK (Smooth_SeriesCount (&series, 105.0) == 4);
+	CHECK (Smooth_SeriesCount (&series, 104.9) == 4);
 
 	/* A bucket is reused once its second comes round again. */
-	Smooth_SeriesRecord (&series, 110.2, 1);
-	Smooth_SeriesSummary (&series, 110.2, &summary);
+	Smooth_SeriesRecord (&series, 105.2, 1);
+	Smooth_SeriesSummary (&series, 105.2, &summary);
 	CHECK (summary.count == 3);
 	CHECK_NEAR (summary.max, 16.0);
 }
@@ -250,11 +354,11 @@ static void test_unsmoothed_packets_are_measured (void)
 	smooth_t s;
 
 	Smooth_Init (&s);
-	Smooth_Arrived (&s, 1.000);
+	Smooth_Arrived (&s, 1.000, NULL);
 	Smooth_Sent (&s, 1.000, 1.000);
-	Smooth_Arrived (&s, 1.013);
+	Smooth_Arrived (&s, 1.013, NULL);
 	Smooth_Sent (&s, 1.013, 1.013);
-	Smooth_Arrived (&s, 1.033);
+	Smooth_Arrived (&s, 1.033, NULL);
 	Smooth_Sent (&s, 1.040, 1.033);
 
 	CHECK (Smooth_SeriesCount (&s.arrivals, 1.040) == 3);
@@ -276,10 +380,10 @@ static void test_duplicates_are_counted_apart (void)
 	smooth_t s;
 
 	Smooth_Init (&s);
-	Smooth_Arrived (&s, 1.000);
+	Smooth_Arrived (&s, 1.000, NULL);
 	Smooth_Sent (&s, 1.000, 1.000);
 	Smooth_Duplicate (&s, 1.000);
-	Smooth_Arrived (&s, 1.013);
+	Smooth_Arrived (&s, 1.013, NULL);
 	Smooth_Sent (&s, 1.013, 1.013);
 	Smooth_Duplicate (&s, 1.013);
 
@@ -298,16 +402,19 @@ static void test_config_clamps_nonsense_values (void)
 {
 	smooth_config_t cfg;
 
-	Smooth_Config (&cfg, 0, -5, -1);
+	Smooth_Config (&cfg, 0, -5, -1, -1);
 	CHECK_NEAR (cfg.interval, 0.0001);
 	CHECK_NEAR (cfg.catchup, 0);
 	CHECK_NEAR (cfg.max_delay, 0);
-	Smooth_Config (&cfg, 12.5, 50, 200);
+	CHECK_NEAR (cfg.drain, 0);
+	Smooth_Config (&cfg, 12.5, 50, 200, 10);
 	CHECK_NEAR (cfg.interval, 0.0125);
 	CHECK_NEAR (cfg.catchup, 0.05);
 	CHECK_NEAR (cfg.max_delay, 0.2);
-	Smooth_Config (&cfg, 5000, 0, 0);
+	CHECK_NEAR (cfg.drain, 0.1);
+	Smooth_Config (&cfg, 5000, 0, 0, 500);
 	CHECK_NEAR (cfg.interval, 1.0);
+	CHECK_NEAR (cfg.drain, 1.0);
 }
 
 int main (void)
@@ -316,7 +423,9 @@ int main (void)
 	test_early_packet_waits_for_its_slot ();
 	test_burst_is_spread_and_catch_up_doubles_the_rate ();
 	test_stale_packets_are_dropped_oldest_first ();
-	test_backlog_drains_when_interval_is_shorter_than_client_rate ();
+	test_interval_is_the_measured_rate_once_known ();
+	test_clumped_arrivals_leave_at_the_client_rate ();
+	test_backlog_drains_at_the_measured_rate ();
 	test_series_summary_and_window ();
 	test_unsmoothed_packets_are_measured ();
 	test_duplicates_are_counted_apart ();
