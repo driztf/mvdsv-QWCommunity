@@ -397,29 +397,26 @@ static void SV_ExecuteDelayedPacket (client_t *cl)
 
 // Processes the smoothed client's queued packets whose slot has come, dropping
 // stale ones first. With `drain` everything goes at once.
-static void SV_ReleaseSmoothedPackets (client_t *cl, qbool drain)
+static void SV_ReleaseSmoothedPackets (client_t *cl, qbool drain, const smooth_config_t *cfg)
 {
-	smooth_config_t cfg;
-
-	SV_SmoothConfig(&cfg);
 	while (cl->packets)
 	{
 		double arrived = cl->packets->time;
 
-		if (!drain && Smooth_Stale(curtime, arrived, &cfg))
+		if (!drain && Smooth_Stale(curtime, arrived, cfg))
 		{
 			SV_FreeHeadDelayedPacket(cl);
 			Smooth_Dropped(&cl->smooth, curtime);
 			continue;
 		}
-		if (!drain && !sv.paused && !Smooth_Due(&cl->smooth, curtime))
+		if (!drain && !Smooth_Due(&cl->smooth, curtime))
 			break;
 
 		SV_ExecuteDelayedPacket(cl);
 		// drained packets may have been queued on the minping clock, so their
 		// wait is not measured
 		if (!drain)
-			Smooth_Released(&cl->smooth, curtime, arrived, cl->packets != NULL, cl->packets ? cl->packets->time : 0, &cfg);
+			Smooth_Released(&cl->smooth, curtime, arrived, cl->packets != NULL, cl->packets ? cl->packets->time : 0, cfg);
 	}
 }
 
@@ -536,6 +533,10 @@ void SV_DropClient(client_t* drop)
 	*drop->uploadfn = 0;
 
 	SV_Logout(drop);
+
+	// queued packets belong to the pool, and would otherwise be executed
+	// for the zombie and leaked when the slot is reused
+	SV_FreeDelayedPackets(drop);
 
 	drop->state = cs_zombie;		    // become free in a few seconds
 	SV_SetClientConnectionTime(drop);   // for zombie timeout
@@ -1487,7 +1488,9 @@ static void SVC_DirectConnect (void)
 	// build a new connection
 	// accept the new client
 	// this is the only place a client_t is ever initialized
+	SV_FreeDelayedPackets(newcl); // packets still queued would leak from the pool
 	memset (newcl, 0, sizeof(*newcl));
+	Smooth_Init(&newcl->smooth);
 
 	newcl->userid = SV_GenerateUserID();
 
@@ -3090,6 +3093,8 @@ static void SV_ReadPackets (void)
 	if (sv.state != ss_active)
 		return;
 
+	SV_SmoothConfig(&cfg);
+
 	// first deal with delayed packets from connected clients
 	for (i = 0, cl=svs.clients; i < MAX_CLIENTS; i++, cl++)
 	{
@@ -3105,14 +3110,14 @@ static void SV_ReadPackets (void)
 		smoothed = SV_ClientSmoothed(cl);
 		if (smoothed != cl->smooth.active)
 		{
-			SV_ReleaseSmoothedPackets(cl, true);
+			SV_ReleaseSmoothedPackets(cl, true, &cfg);
 			Smooth_Reset(&cl->smooth);
 			cl->smooth.active = smoothed;
 		}
 
 		if (smoothed)
 		{
-			SV_ReleaseSmoothedPackets(cl, false);
+			SV_ReleaseSmoothedPackets(cl, false, &cfg);
 			continue;
 		}
 
@@ -3167,19 +3172,20 @@ static void SV_ReadPackets (void)
 		if (i == MAX_CLIENTS)
 			continue;
 
-		// a copy of the previous packet (cl_c2sdupe) serves no purpose once the
-		// original has arrived; the netchan would discard it as out of order anyway
-		dupe = cl->smooth.have_sequence && cl->smooth.last_sequence == sequence;
-		cl->smooth.last_sequence = sequence;
-		cl->smooth.have_sequence = true;
+		// a copy of an earlier packet (cl_c2sdupe), or one the link reordered
+		// behind a newer one, serves no purpose once a later packet has arrived;
+		// the netchan would discard it as out of order anyway, so it must not
+		// take up a pacing slot or count as an arrival
+		dupe = cl->smooth.have_sequence && sequence <= cl->smooth.last_sequence;
 		if (dupe)
 		{
 			Smooth_Duplicate(&cl->smooth, curtime);
 			continue;
 		}
+		cl->smooth.last_sequence = sequence;
+		cl->smooth.have_sequence = true;
 
 		// ok, we know who sent this packet, but do we need to delay executing it?
-		SV_SmoothConfig(&cfg);
 		Smooth_Arrived(&cl->smooth, curtime, cl->smooth.active ? &cfg : NULL);
 		if (cl->smooth.active)
 		{

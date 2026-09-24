@@ -17,11 +17,12 @@ the queue drains at double rate to recover from a latency burst, and packets
 that have waited past a hard limit are discarded, oldest first, so the client
 skips ahead rather than falling ever further behind.
 
-Clients may send every packet twice for loss protection (cl_c2sdupe). A
-packet that repeats the netchan sequence number of the one before it is such
-a duplicate; the original has already arrived, so the copy serves no purpose
-here and the owner discards it, keeping it out of the calls below except
-Smooth_Duplicate, which only counts it.
+Clients may send every packet twice for loss protection (cl_c2sdupe), and
+a jittery link may deliver packets out of order. A packet whose netchan
+sequence number does not exceed the highest seen so far is either such a
+duplicate or a straggler; a later packet has already arrived, so it serves
+no purpose here and the owner discards it, keeping it out of the calls below
+except Smooth_Duplicate, which only counts it.
 
 This file does not depend on the rest of the server, so it can be unit
 tested on its own (see tests/test_smooth.c). The caller owns the packet
@@ -74,7 +75,7 @@ typedef struct
 	double   last_arrival; /* 0 before the first packet */
 	double   last_send;
 	unsigned dropped;      /* over the life of the connection */
-	unsigned last_sequence; /* netchan sequence of the last packet, for spotting duplicates; owner maintained */
+	unsigned last_sequence; /* highest netchan sequence seen, for spotting duplicates and stragglers; owner maintained */
 	int      have_sequence;
 	double   slack;        /* smallest wait of a release since period_start */
 	int      have_slack;

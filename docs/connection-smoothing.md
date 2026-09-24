@@ -42,8 +42,9 @@ Three refinements keep the queue healthy:
   long are dropped, oldest first, so the client skips ahead instead of
   falling ever further behind.
 
-Duplicate packets, which clients send for loss protection, are counted and
-discarded on arrival rather than being treated as extra traffic.
+Duplicate packets, which clients send for loss protection, and packets the
+link delivers out of order are counted and discarded on arrival rather than
+being treated as extra traffic.
 
 ## Design decisions and why
 
@@ -130,12 +131,15 @@ datagram does not cost a frame. On the wire this is two identical datagrams
 with the same netchan sequence number, microseconds apart. Treated naively,
 such a client looks like it sends 154 packets/s, which no interval built
 for 77 can ever drain; the first live test showed exactly this, with the
-queue pinned in catch-up mode. A packet repeating the previous packet's
-sequence number is therefore recognised as a duplicate and discarded on
-arrival, counted in the statistics but never queued or processed. The
-copy exists to survive loss on the way to the server; once the original
-has arrived it has done its job, and the netchan would reject it as out of
-order anyway. A proxy in front of the server should instead pass copies on
+queue pinned in catch-up mode. A packet whose sequence number does not
+exceed the highest seen so far is therefore recognised as a duplicate and
+discarded on arrival, counted in the statistics but never queued or
+processed. The copy exists to survive loss on the way to the server; once
+the original has arrived it has done its job, and the netchan would reject
+it as out of order anyway. The same test catches a packet the link reorders
+behind a newer one: a plain check against only the previous packet's
+sequence would let it through, where it would take a pacing slot and skew
+the rate estimate, only for the netchan to reject it as out of order. A proxy in front of the server should instead pass copies on
 with their originals, since there may still be loss on its own link to the
 server, which is what qwfwd does.
 
